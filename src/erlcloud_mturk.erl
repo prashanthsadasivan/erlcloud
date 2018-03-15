@@ -13,6 +13,7 @@
          block_worker/2, block_worker/3,
          change_hit_type_of_hit/2, change_hit_type_of_hit/3,
          create_hit/5, create_hit/6, create_hit/1, create_hit/2,
+         create_hit_with_layout/9, create_hit_with_layout/10,
          create_qualification_type/1, create_qualification_type/2,
          disable_hit/1, disable_hit/2,
          dispose_hit/1, dispose_hit/2,
@@ -207,6 +208,34 @@ create_hit(HIT, Config) ->
         erlcloud_aws:param_list([encode_money(HIT#mturk_hit.reward)], "Reward") ++
         erlcloud_aws:param_list([encode_qualification_requirement(QR) || QR <- HIT#mturk_hit.qualification_requirements],
                                 "QualificationRequirement"),
+    Doc = mturk_xml_request(Config, "CreateHIT", Params),
+    erlcloud_xml:decode(
+      [
+       {hit_id, "HITId", text},
+       {hit_type_id, "HITTypeId", text}
+      ],
+      Doc
+     ).
+
+create_hit_with_layout(Title, Description, HITLayoutId, HITLayoutParameters, Reward, AssignmentDurationInSeconds, LifetimeInSeconds, Keywords, MaxAssignments) -> 
+    create_hit_with_layout(Title, Description, HITLayoutId, HITLayoutParameters, Reward, AssignmentDurationInSeconds, LifetimeInSeconds, Keywords, MaxAssignments, default_config()).
+
+create_hit_with_layout(Title, Description, HITLayoutId, HITLayoutParameters, Reward, AssignmentDurationInSeconds, LifetimeInSeconds, Keywords, MaxAssignments, Config) -> 
+
+    erlang:display(HITLayoutParameters),
+    Params = [
+              {"Title", Title},
+              {"Description", Description},
+              {"HITLayoutId", HITLayoutId},
+              {"AssignmentDurationInSeconds", AssignmentDurationInSeconds},
+              {"LifetimeInSeconds", LifetimeInSeconds},
+              {"Keywords", Keywords},
+              {"MaxAssignments", MaxAssignments}
+             ] ++
+        erlcloud_aws:param_list([encode_money(Reward)], "Reward") ++
+        erlcloud_aws:param_list([encode_hit_layout_param(HITLayoutParameters)], "HITLayoutParameter"),
+
+
     Doc = mturk_xml_request(Config, "CreateHIT", Params),
     erlcloud_xml:decode(
       [
@@ -1089,6 +1118,9 @@ extract_money(Money) ->
 
 encode_money(#mturk_money{amount=Amount, currency_code=CurrencyCode}) ->
     [{"Amount", Amount}, {"CurrencyCode", CurrencyCode}].
+
+encode_hit_layout_param(#{"Name":= Name, "Value" := Value}) ->
+  [{"Name", Name}, {"Value", Value}].
 
 -spec notify_workers(string(), string(), [string()]) -> ok | no_return().
 notify_workers(Subject, MessageText, WorkerIds) ->
