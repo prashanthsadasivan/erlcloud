@@ -217,9 +217,13 @@ create_hit(HIT, Config) ->
       Doc
      ).
 
+-spec create_hit_with_layout(string(), string(), string(), map(), string(), 30..3153600,
+                       1..1000000000, list(), integer()) -> proplist() | no_return().
 create_hit_with_layout(Title, Description, HITLayoutId, HITLayoutParameters, Reward, AssignmentDurationInSeconds, LifetimeInSeconds, Keywords, MaxAssignments) -> 
     create_hit_with_layout(Title, Description, HITLayoutId, HITLayoutParameters, Reward, AssignmentDurationInSeconds, LifetimeInSeconds, Keywords, MaxAssignments, default_config()).
 
+-spec create_hit_with_layout(string(), string(), string(), map(), string(), 30..3153600,
+                       1..1000000000, list(), integer(), aws_config()) -> proplist() | no_return().
 create_hit_with_layout(Title, Description, HITLayoutId, HITLayoutParameters, Reward, AssignmentDurationInSeconds, LifetimeInSeconds, Keywords, MaxAssignments, Config) -> 
 
     erlang:display(HITLayoutParameters),
