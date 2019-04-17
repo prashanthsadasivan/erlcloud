@@ -8,9 +8,11 @@
          add_permission/3, add_permission/4,
          change_message_visibility/3, change_message_visibility/4,
          create_queue/1, create_queue/2, create_queue/3,
+         create_fifo_queue/1, create_fifo_queue/2, create_fifo_queue/3,
          delete_message/2, delete_message/3,
          delete_queue/1, delete_queue/2,
          purge_queue/1, purge_queue/2,
+         get_queue_url/1, get_queue_url/2,
          get_queue_attributes/1, get_queue_attributes/2, get_queue_attributes/3,
          list_queues/0, list_queues/1, list_queues/2,
          receive_message/1, receive_message/2, receive_message/3, receive_message/4,
@@ -41,11 +43,14 @@
                                   wait_time_seconds |
                                   receive_message_wait_time_seconds).
 -type(sqs_queue_attribute_name() :: all | approximate_number_of_messages |
+                                    kms_master_key_id | kms_data_key_reuse_period_seconds |
                                     approximate_number_of_messages_not_visible | visibility_timeout |
                                     created_timestamp | last_modified_timestamp | policy |
                                     queue_arn).
 
--type(batch_entry() :: {string(), string()} | {string(), string(), [message_attribute()]}).
+-type(batch_entry() ::   {string(), string()}
+                       | {string(), string(), [message_attribute()]}
+                       | {string(), string(), [message_attribute()], proplists:proplist()}).
 -type(message_attribute() :: {string(), string() | integer() | float() | binary()}).
 
 -spec new(string(), string()) -> aws_config().
@@ -118,14 +123,35 @@ create_queue(QueueName, DefaultVisibilityTimeout) ->
     create_queue(QueueName, DefaultVisibilityTimeout, default_config()).
 
 -spec create_queue(string(), 0..43200 | none, aws_config()) -> proplist() | no_return().
-create_queue(QueueName, DefaultVisibilityTimeout, Config)
+create_queue(QueueName, DefaultVisibilityTimeout, Config) ->
+    create_queue_impl(QueueName, DefaultVisibilityTimeout, Config, []).
+
+-spec create_fifo_queue(string()) -> proplist() | no_return().
+create_fifo_queue(QueueName) ->
+    create_fifo_queue(QueueName, default_config()).
+
+-spec create_fifo_queue(string(), 0..43200 | none | aws_config()) -> proplist() | no_return().
+create_fifo_queue(QueueName, Config)
+  when is_record(Config, aws_config) ->
+    create_fifo_queue(QueueName, none, Config);
+create_fifo_queue(QueueName, DefaultVisibilityTimeout) ->
+    create_fifo_queue(QueueName, DefaultVisibilityTimeout, default_config()).
+
+-spec create_fifo_queue(string(), 0..43200 | none, aws_config()) -> proplist() | no_return().
+create_fifo_queue(QueueName, DefaultVisibilityTimeout, Config) ->
+    Attributes = erlcloud_aws:param_list([[{"Name", "FifoQueue"}, {"Value", true}]], "Attribute"),
+    create_queue_impl(QueueName, DefaultVisibilityTimeout, Config, Attributes).
+
+-spec create_queue_impl(string(), 0..43200 | none, aws_config(), proplists:proplist()) -> proplist() | no_return().
+create_queue_impl(QueueName, DefaultVisibilityTimeout, Config, Attributes)
   when is_list(QueueName),
        (is_integer(DefaultVisibilityTimeout) andalso
         DefaultVisibilityTimeout >= 0 andalso
         DefaultVisibilityTimeout =< 43200) orelse
        DefaultVisibilityTimeout =:= none ->
     Doc = sqs_xml_request(Config, "/", "CreateQueue",
-                          [{"QueueName", QueueName}, {"DefaultVisibilityTimeout", DefaultVisibilityTimeout}]),
+                          [{"QueueName", QueueName},
+                           {"DefaultVisibilityTimeout", DefaultVisibilityTimeout} | Attributes]),
     erlcloud_xml:decode(
       [
        {queue_url, "CreateQueueResult/QueueUrl", text}
@@ -160,6 +186,20 @@ purge_queue(QueueName) ->
 purge_queue(QueueName, Config)
   when is_list(QueueName), is_record(Config, aws_config) ->
     sqs_simple_request(Config, QueueName, "PurgeQueue", []).
+
+-spec get_queue_url(string()) -> proplist() | no_return().
+get_queue_url(QueueName) ->
+    get_queue_url(QueueName, default_config()).
+
+-spec get_queue_url(string(), aws_config()) -> proplist() | no_return().
+get_queue_url(QueueName, Config) ->
+    Doc = sqs_xml_request(Config, "/", "GetQueueUrl", [{"QueueName", QueueName}]),
+    erlcloud_xml:decode(
+        [
+            {queue_url, "GetQueueUrlResult/QueueUrl", text}
+        ],
+        Doc
+    ).
 
 -spec get_queue_attributes(string()) -> proplist() | no_return().
 get_queue_attributes(QueueName) ->
@@ -196,6 +236,8 @@ encode_attribute_name(delay_seconds) -> "DelaySeconds";
 encode_attribute_name(receive_message_wait_time_seconds) -> "ReceiveMessageWaitTimeSeconds";
 encode_attribute_name(policy) -> "Policy";
 encode_attribute_name(redrive_policy) -> "RedrivePolicy";
+encode_attribute_name(kms_master_key_id) -> "KmsMasterKeyId";
+encode_attribute_name(kms_data_key_reuse_period_seconds) -> "KmsDataKeyReusePeriodSeconds";
 encode_attribute_name(all) -> "All".
 
 
@@ -211,12 +253,19 @@ decode_attribute_name("CreatedTimestamp") -> created_timestamp;
 decode_attribute_name("DelaySeconds") -> delay_seconds;
 decode_attribute_name("ReceiveMessageWaitTimeSeconds") -> receive_message_wait_time_seconds;
 decode_attribute_name("Policy") -> policy;
-decode_attribute_name("RedrivePolicy") -> redrive_policy.
+decode_attribute_name("RedrivePolicy") -> redrive_policy;
+decode_attribute_name("ContentBasedDeduplication") -> content_based_deduplication;
+decode_attribute_name("KmsMasterKeyId") -> kms_master_key_id;
+decode_attribute_name("KmsDataKeyReusePeriodSeconds") -> kms_data_key_reuse_period_seconds;
+decode_attribute_name("FifoQueue") -> fifo_queue.
 
 
 decode_attribute_value("Policy", Value) -> Value;
 decode_attribute_value("QueueArn", Value) -> Value;
 decode_attribute_value("RedrivePolicy", Value) -> Value;
+decode_attribute_value("KmsMasterKeyId", Value) -> Value;
+decode_attribute_value(_, "true") -> true;
+decode_attribute_value(_, "false") -> false;
 decode_attribute_value(_, Value) -> list_to_integer(Value).
 
 
@@ -327,15 +376,24 @@ encode_msg_attribute_names(Names) when is_list(Names) ->
 encode_msg_attribute_name(all) -> "All";
 encode_msg_attribute_name(sender_id) -> "SenderId";
 encode_msg_attribute_name(sent_timestamp) -> "SentTimestamp";
+encode_msg_attribute_name(message_group_id) -> "MessageGroupId";
+encode_msg_attribute_name(message_deduplication_id) -> "MessageDeduplicationId";
 encode_msg_attribute_name(approximate_receive_count) -> "ApproximateReceiveCount";
 encode_msg_attribute_name(approximate_first_receive_timestamp) -> "ApproximateFirstReceiveTimestamp";
 encode_msg_attribute_name(Name) when is_list(Name) -> Name.
 
 decode_msg_attribute_name("SenderId") -> sender_id;
 decode_msg_attribute_name("SentTimestamp") -> sent_timestamp;
+decode_msg_attribute_name("MessageGroupId") -> message_group_id;
+decode_msg_attribute_name("MessageDeduplicationId") -> message_deduplication_id;
 decode_msg_attribute_name("ApproximateReceiveCount") -> approximate_receive_count;
 decode_msg_attribute_name("ApproximateFirstReceiveTimestamp") -> approximate_first_receive_timestamp;
 decode_msg_attribute_name(Name) when is_list(Name) -> Name.
+
+decode_msg_attribute_value("SenderId", Value) -> Value;
+decode_msg_attribute_value("MessageGroupId", Value) -> Value;
+decode_msg_attribute_value("MessageDeduplicationId", Value) -> Value;
+decode_msg_attribute_value(_Name, Value) -> list_to_integer(Value).
 
 decode_messages(Messages) ->
     [decode_message(Message) || Message <- Messages].
@@ -371,6 +429,8 @@ decode_message_attribute(Attributes) ->
         end,
     [F(Attr) || Attr <- Attributes].
 
+decode_message_attribute_value("Number", Value) ->
+    list_to_integer(Value);
 decode_message_attribute_value(["Number", "int"], Value) ->
     list_to_integer(Value);
 decode_message_attribute_value(["Number", "int", CustomType], Value) ->
@@ -379,21 +439,25 @@ decode_message_attribute_value(["Number", "float"], Value) ->
     list_to_float(Value);
 decode_message_attribute_value(["Number", "float", CustomType], Value) ->
     {CustomType, list_to_float(Value)};
-decode_message_attribute_value(["String"], Value) ->
+decode_message_attribute_value("String", Value) ->
     Value;
 decode_message_attribute_value(["String", CustomType], Value) ->
     {CustomType, Value};
-decode_message_attribute_value(["Binary"], Value) ->
+decode_message_attribute_value("Binary", Value) ->
     list_to_binary(Value);
 decode_message_attribute_value(["Binary", CustomType], Value) ->
     {CustomType, list_to_binary(Value)};
 decode_message_attribute_value(DataType, Value) ->
-    decode_message_attribute_value(string:tokens(DataType, "."), Value).
+    case string:tokens(DataType, ".") of
+        [_Other] -> % check if datatype is something not handled above by Number/String/Binary
+            erlang:error(decode_message_attribute_value_error, [DataType, Value]);
+        Parsed ->
+            decode_message_attribute_value(Parsed, Value)
+    end.
 
 decode_msg_attributes(Attrs)  ->
     [{decode_msg_attribute_name(Name),
-      case Name of "SenderId" -> Value; _ -> list_to_integer(Value) end} ||
-        {Name, Value} <- decode_attributes(Attrs)].
+      decode_msg_attribute_value(Name, Value)} || {Name, Value} <- decode_attributes(Attrs)].
 
 decode_attributes(Attrs) ->
     [{erlcloud_xml:get_text("Name", Attr), erlcloud_xml:get_text("Value", Attr)} ||
@@ -413,27 +477,32 @@ remove_permission(QueueName, Label, Config)
 send_message(QueueName, MessageBody) ->
     send_message(QueueName, MessageBody, default_config()).
 
--spec send_message(string(), string(), 0..900 | none | aws_config()) -> proplist() | no_return().
+-spec send_message(string(), string(), proplists:proplist() | 0..900 | none | aws_config()) -> proplist() | no_return().
 send_message(QueueName, MessageBody, #aws_config{} = Config) ->
     send_message(QueueName, MessageBody, none, Config);
 send_message(QueueName, MessageBody, DelaySeconds) 
   when ((DelaySeconds >= 0 andalso DelaySeconds =< 900) orelse DelaySeconds =:= none) ->
-    send_message(QueueName, MessageBody, DelaySeconds, default_config()).
+    send_message(QueueName, MessageBody, DelaySeconds, default_config());
+send_message(QueueName, MessageBody, Opts) when is_list(Opts) ->
+    send_message(QueueName, MessageBody, Opts, default_config()).
 
--spec send_message(string(), string(), 0..900 | none, aws_config()) -> proplist() | no_return().
-send_message(QueueName, MessageBody, DelaySeconds, Config) ->
-    send_message(QueueName, MessageBody, DelaySeconds, [], Config).
+-spec send_message(string(), string(), proplists:proplist() | 0..900 | none, aws_config()) -> proplist() | no_return().
+send_message(QueueName, MessageBody, DelaySeconds, Config)
+  when ((DelaySeconds >= 0 andalso DelaySeconds =< 900) orelse DelaySeconds =:= none) ->
+    send_message(QueueName, MessageBody, [{delay_seconds, DelaySeconds}], [], Config);
+send_message(QueueName, MessageBody, Opts, Config) when is_list(Opts) ->
+    send_message(QueueName, MessageBody, Opts, [], Config).
 
--spec send_message(string(), string(), 0..900 | none, [message_attribute()], aws_config()) -> proplist() | no_return().
+-spec send_message(string(), string(), proplists:proplist() | 0..900 | none, [message_attribute()], aws_config()) -> proplist() | no_return().
 send_message(QueueName, MessageBody, DelaySeconds, MessageAttributes, #aws_config{}=Config)
-  when is_list(QueueName) andalso 
-       is_list(MessageBody) andalso
-       ((DelaySeconds >= 0 andalso DelaySeconds =< 900) orelse DelaySeconds =:= none) andalso 
-       is_list(MessageAttributes) ->
+  when ((DelaySeconds >= 0 andalso DelaySeconds =< 900) orelse DelaySeconds =:= none) ->
+    send_message(QueueName, MessageBody, [{delay_seconds, DelaySeconds}], MessageAttributes, Config);
+send_message(QueueName, MessageBody, Opts, MessageAttributes, #aws_config{}=Config)
+  when is_list(Opts) andalso is_list(MessageAttributes) ->
     EncodedMessageAttributes = encode_message_attributes(MessageAttributes),
+    EncodedMessageOpts = [{encode_send_msg_attribute_name(N), V} || {N, V} <- Opts],
     Doc = sqs_xml_request(Config, QueueName, "SendMessage",
-                          [{"MessageBody", MessageBody},
-                           {"DelaySeconds", DelaySeconds} | EncodedMessageAttributes]),
+                          [{"MessageBody", MessageBody} | EncodedMessageOpts] ++ EncodedMessageAttributes),
     erlcloud_xml:decode(
       [
        {message_id, "SendMessageResult/MessageId", text},
@@ -442,16 +511,16 @@ send_message(QueueName, MessageBody, DelaySeconds, MessageAttributes, #aws_confi
       Doc
      ).
 
--spec set_queue_attributes(string(), [{visibility_timeout, integer()} | {policy, string()|binary()}]) -> ok | no_return().
+-spec set_queue_attributes(string(), proplists:proplist()) -> ok | no_return().
 set_queue_attributes(QueueName, Attributes) ->
     set_queue_attributes(QueueName, Attributes, default_config()).
 
--spec set_queue_attributes(string(), [{visibility_timeout, integer()} | {policy, string()|binary()}], aws_config()) -> ok | no_return().
+-spec set_queue_attributes(string(), proplists:proplist(), aws_config()) -> ok | no_return().
 set_queue_attributes(QueueName, Attributes, Config)
   when is_list(QueueName), is_list(Attributes), is_record(Config, aws_config) ->
-    Params = lists:flatten(erlcloud_aws:param_list([encode_attribute_name(Name) || {Name, _} <- Attributes], "Attribute.Name"),
-                          erlcloud_aws:param_list([Value || {_, Value} <- Attributes], "Attribute.Value")),
-
+    Params = erlcloud_aws:param_list([
+        [{"Name", encode_attribute_name(Name)},
+         {"Value", Value}] || {Name, Value} <- Attributes], "Attribute"),
     sqs_simple_request(Config, QueueName, "SetQueueAttributes", Params).
 
 -spec send_message_batch(string(), [batch_entry()]) -> proplist() | no_return().
@@ -530,15 +599,18 @@ change_message_visibility_batch(QueueName, [{Id, Handle}|_]=BatchReceiptHandles,
 
 -spec mk_send_batch_entry(integer(), batch_entry(), 0..900 | none) -> [{string(), integer() | string()}].
 mk_send_batch_entry(N, {MessageId, MessageBody}, DelaySeconds) ->
-    mk_send_batch_entry(N, {MessageId, MessageBody, []}, DelaySeconds);
-mk_send_batch_entry(N, {MessageId, MessageBody, MessageAttributes}, DelaySeconds)
-  when is_list(MessageId), is_list(MessageBody), is_list(MessageAttributes) ->
+    mk_send_batch_entry(N, {MessageId, MessageBody, [], []}, DelaySeconds);
+mk_send_batch_entry(N, {MessageId, MessageBody, MessageAttributes}, DelaySeconds) ->
+    mk_send_batch_entry(N, {MessageId, MessageBody, MessageAttributes, []}, DelaySeconds);
+mk_send_batch_entry(N, {MessageId, MessageBody, MessageAttributes, Opts}, DelaySeconds)
+  when is_list(MessageId), is_list(MessageBody), is_list(MessageAttributes), is_list(Opts) ->
     N0 = integer_to_list(N),
-    Base = [
-            ?SEND_BATCH_FIELD(N0, ".Id", MessageId),
+    EncodedOpts = [
+        ?SEND_BATCH_FIELD(N0, [$., encode_send_msg_attribute_name(Field)], Value)
+        || {Field, Value} <- Opts],
+    Base = [?SEND_BATCH_FIELD(N0, ".Id", MessageId),
             ?SEND_BATCH_FIELD(N0, ".MessageBody", MessageBody),
-            ?SEND_BATCH_FIELD(N0, ".DelaySeconds", DelaySeconds)
-           ],
+            ?SEND_BATCH_FIELD(N0, ".DelaySeconds", DelaySeconds) | EncodedOpts],
     lists:foldl(fun({Field, Value}, Acc) ->
                         [?SEND_BATCH_FIELD(N0, [$., Field], Value) | Acc]
                 end, Base, encode_message_attributes(MessageAttributes)).
@@ -614,6 +686,10 @@ queue_path([$/|QueueName]) -> [$/ |erlcloud_http:url_encode(QueueName)];
 queue_path([$h,$t,$t,$p|_] = URL) ->
     re:replace(URL, "^https?://[^/]*", "", [{return, list}]);
 queue_path(QueueName) -> [$/ | erlcloud_http:url_encode(QueueName)].
+
+encode_send_msg_attribute_name(delay_seconds) -> "DelaySeconds";
+encode_send_msg_attribute_name(message_group_id) -> "MessageGroupId";
+encode_send_msg_attribute_name(message_deduplication_id) -> "MessageDeduplicationId".
 
 encode_message_attributes(Attributes) ->
     Map = fun(Attribute, Acc) ->

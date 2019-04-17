@@ -27,12 +27,13 @@
          update_alias/2, update_alias/4, update_alias/5,
          update_event_source_mapping/4, update_event_source_mapping/5,
          update_function_code/3, update_function_code/4,
-         update_function_configuration/6, update_function_configuration/7]).
+         update_function_configuration/3, update_function_configuration/6, update_function_configuration/7]).
 
--type(runtime()     :: 'nodejs' | 'java8' | 'python2.7').
+-type(runtime()     :: 'nodejs' | 'nodejs4.3' | 'nodejs6.10' | 'nodejs8.10' | 'java8' |
+    'python2.7' | 'python3.6' | 'dotnetcore1.0' | 'dotnetcore2.0' | 'dotnetcore2.1' | 'nodejs4.3-edge' | 'go1.x').
 -type(return_val()  :: any()).
 
-
+-import(erlcloud_util, [filter_undef/1]).
 
 %%------------------------------------------------------------------------------
 %% Library initialization.
@@ -356,13 +357,13 @@ invoke(FunctionName, Payload) when is_list(Payload)->
     invoke(FunctionName, Payload, default_config()).
 
 -spec invoke(FunctionName :: binary(),
-             Payload :: list(),
+             Payload :: list() | binary(),
              Config  :: aws_config() | binary()) -> return_val().
 invoke(FunctionName, Payload, ConfigOrQualifier) when is_list(Payload)->
     invoke(FunctionName, Payload, [], ConfigOrQualifier).
 
 -spec invoke(FunctionName :: binary(),
-             Payload :: list(),
+             Payload :: list() | binary(),
              Options :: list(),
              Config  :: aws_config() | binary()) -> return_val().
 invoke(FunctionName, Payload, Options, Config = #aws_config{}) ->
@@ -371,7 +372,7 @@ invoke(FunctionName, Payload, Options, Qualifier) when is_binary(Qualifier) ->
     invoke(FunctionName, Payload, Options, Qualifier, default_config()).
 
 -spec invoke(FunctionName :: binary(),
-             Payload   :: list(),
+             Payload   :: list() | binary(),
              Options   :: list(),
              Qualifier :: binary()| undefined,
              Config    :: aws_config()) -> return_val().
@@ -688,13 +689,21 @@ update_function_configuration(FunctionName, Description,
                                     Config       :: aws_config()) -> return_val().
 update_function_configuration(FunctionName, Description, Handler,
                               MemorySize, Role, Timeout, Config) ->
+    Configuration = [{<<"Description">>, Description},
+                     {<<"Handler">>, Handler},
+                     {<<"MemorySize">>, MemorySize},
+                     {<<"Role">>, Role},
+                     {<<"Timeout">>, Timeout}],
+    update_function_configuration(FunctionName, Configuration, Config).
+
+-spec update_function_configuration(FunctionName :: binary(),
+    Configuration :: list(tuple()), % JSX json object
+    Config       :: aws_config()) -> return_val().
+update_function_configuration(FunctionName, Configuration, Config) when is_list(Configuration) ->
     Path = base_path() ++ "functions/" ++ binary_to_list(FunctionName) ++ "/configuration",
-    Json = filter_undef([{<<"Description">>, Description},
-                         {<<"Handler">>, Handler},
-                         {<<"MemorySize">>, MemorySize},
-                         {<<"Role">>, Role},
-                         {<<"Timeout">>, Timeout}]),
+    Json = filter_undef(Configuration),
     lambda_request(Config, put, Path, Json).
+
 %%------------------------------------------------------------------------------
 %% Utility Functions
 %%------------------------------------------------------------------------------
@@ -708,9 +717,6 @@ from_record(#erlcloud_lambda_code{s3Bucket        = S3Bucket,
             {<<"S3ObjectVersion">>, S3ObjectVersion},
             {<<"ZipFile">>, ZipFile}],
     filter_undef(List).
-
-filter_undef(List) ->
-    lists:filter(fun({_Name, Value}) -> Value =/= undefined end, List).
 
 base_path() ->
     "/" ++ ?API_VERSION ++ "/".
@@ -734,24 +740,30 @@ lambda_request_no_update(Config, Method, Path, Options, Body, QParam) ->
                Value  -> Value
            end,
     ShowRespHeaders = proplists:get_value(show_headers, Options, false),
-    Hdrs = proplists:delete(show_headers, Options),
+    RawBody = proplists:get_value(raw_response_body, Options, false),
+    Hdrs0 = proplists:delete(show_headers, Options),
+    Hdrs = proplists:delete(raw_response_body, Hdrs0),
     Headers = headers(Method, Path, Hdrs, Config, encode_body(Body), QParam),
     case erlcloud_aws:do_aws_request_form_raw(
            Method, Config#aws_config.lambda_scheme, Config#aws_config.lambda_host,
            Config#aws_config.lambda_port, Path, Form, Headers, Config, ShowRespHeaders) of
         {ok, RespHeaders, RespBody} ->
-            {ok, RespHeaders, decode_body(RespBody)};
+            {ok, RespHeaders, decode_body(RespBody, RawBody)};
         {ok, RespBody} ->
-            {ok, decode_body(RespBody)};
+            {ok, decode_body(RespBody, RawBody)};
         E ->
             E
     end.
 
-decode_body(<<>>) ->
+decode_body(Body, true) ->
+    Body;
+decode_body(<<>>, _RawBody) ->
     [];
-decode_body(BinData) ->
+decode_body(BinData, _RawBody) ->
     jsx:decode(BinData).
 
+encode_body(Bin) when is_binary(Bin) ->
+    Bin;
 encode_body(undefined) ->
     <<>>;
 encode_body([]) ->

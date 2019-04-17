@@ -4,7 +4,7 @@
 -record(aws_assume_role,{
     role_arn :: string() | undefined,
     session_name = "erlcloud" :: string(),
-    duration_secs =  900 :: 900..3600,
+    duration_secs =  900 :: 900..43200,
     external_id :: string() | undefined
 }).
 
@@ -36,8 +36,9 @@
           emr_scheme="https://"::string()|undefined,
           emr_host="elasticmapreduce.us-east-1.amazonaws.com"::string(),
           emr_port=undefined::non_neg_integer()|undefined,
-          sns_scheme="http://"::undefined|string(),
+          sns_scheme="https://"::undefined|string(),
           sns_host="sns.amazonaws.com"::string(),
+          sns_port=undefined::non_neg_integer()|undefined,
           mturk_host="mechanicalturk.amazonaws.com"::string(),
           mon_host="monitoring.amazonaws.com"::string(),
           mon_port=undefined::non_neg_integer()|undefined,
@@ -55,6 +56,9 @@
           lambda_scheme="https://"::string(),
           lambda_host="lambda.us-east-1.amazonaws.com"::string(),
           lambda_port=443::non_neg_integer(),
+          states_scheme="https://"::string(),
+          states_host="states.us-east-1.amazonaws.com"::string(),
+          states_port=443::non_neg_integer(),
           redshift_scheme="https://"::string(),
           redshift_host="redshift.us-east-1.amazonaws.com"::string(),
           redshift_port=443::non_neg_integer(),
@@ -103,6 +107,9 @@
           mms_scheme="https://"::string(),
           mms_host="metering.marketplace.us-east-1.amazonaws.com"::string(),
           mms_port=443::non_neg_integer(),
+          guardduty_scheme="https://"::string(),
+          guardduty_host="guardduty.us-east-1.amazonaws.com"::string(),
+          guardduty_port=443::non_neg_integer(),
           cur_scheme="https://"::string(),
           cur_host="cur.us-east-1.amazonaws.com"::string(),
           cur_port=443::non_neg_integer(),
@@ -133,6 +140,11 @@
           %% If you provide a custom function be aware of this anticipated change.
           %% See erlcloud_retry for full documentation.
           retry=fun erlcloud_retry:no_retry/1::erlcloud_retry:retry_fun(),
+
+          %% By default treat all non 2xx http error codes as errors.
+          %% But in some cases, like lambda call it useful to override such
+          %% behaviour by custom one.
+          retry_response_type=fun erlcloud_retry:only_http_errors/1::erlcloud_retry:response_type_fun(),
           %% Currently matches DynamoDB retry
           %% It's likely this is too many retries for other services
           retry_num=10::non_neg_integer(),

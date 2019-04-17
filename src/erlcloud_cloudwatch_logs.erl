@@ -25,6 +25,9 @@
 -type log_stream_name() :: string() | binary() | undefined.
 -type log_stream_prefix() :: string() | binary() | undefined.
 -type limit() :: pos_integer() | undefined.
+-type filter_name_prefix() :: string() | binary() | undefined.
+-type metric_name() :: string() | binary() | undefined.
+-type metric_namespace() :: string() | binary() | undefined.
 -type log_stream_order() :: log_stream_name | last_event_time | undefined.
 -type events() :: [#{message => binary(), timestamp => pos_integer()}].
 
@@ -36,6 +39,10 @@
 
 -type log_group() :: jsx:json_term().
 -type log_stream() :: jsx:json_term().
+-type metric_filters() :: jsx:json_term().
+
+-type tag():: {binary(), binary()}.
+-type tags_return() :: jsx:json_term().
 
 
 %% Library initialization
@@ -62,9 +69,24 @@
     describe_log_streams/6,
     describe_log_streams/7,
 
+    describe_metric_filters/0,
+    describe_metric_filters/1,
+    describe_metric_filters/2,
+    describe_metric_filters/3,
+    describe_metric_filters/4,
+    describe_metric_filters/6,
+    describe_metric_filters/7,
+
     put_logs_events/4,
-    put_logs_events/5
-]).
+    put_logs_events/5,
+
+    list_tags_log_group/1,
+    list_tags_log_group/2,
+
+    tag_log_group/2,
+    tag_log_group/3
+
+    ]).
 
 %%==============================================================================
 %% Library initialization
@@ -325,6 +347,160 @@ log_events(Events) ->
     [maps:with([message, timestamp], X) ||
         #{message := _, timestamp := _} = X <- Events].
 
+%%------------------------------------------------------------------------------
+%% @doc
+%%
+%% DescribeMetricFilters action
+%% https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_DescribeMetricFilters.html
+%%
+%% @end
+%%------------------------------------------------------------------------------
+-spec describe_metric_filters() -> result_paged(metric_filters()).
+describe_metric_filters() ->
+    describe_metric_filters(default_config()).
+
+
+-spec describe_metric_filters(
+    aws_config() | log_group_name()
+) -> result_paged(metric_filters()).
+describe_metric_filters(#aws_config{} = Config) ->
+    describe_metric_filters(undefined, Config);
+describe_metric_filters(LogGroupName) ->
+    describe_metric_filters(LogGroupName, default_config()).
+
+
+-spec describe_metric_filters(
+    log_group_name(),
+    aws_config()
+) -> result_paged(metric_filters()).
+describe_metric_filters(LogGroupName, Config) ->
+    describe_metric_filters(LogGroupName, ?DEFAULT_LIMIT, Config).
+
+
+-spec describe_metric_filters(
+    log_group_name(),
+    limit(),
+    aws_config()
+) -> result_paged(metric_filters()).
+describe_metric_filters(LogGroupName, Limit, Config) ->
+    describe_metric_filters(LogGroupName, Limit, undefined, Config).
+
+
+-spec describe_metric_filters(
+    log_group_name(),
+    limit(),
+    filter_name_prefix(),
+    aws_config()
+) -> result_paged(metric_filters()).
+describe_metric_filters(LogGroupName, Limit, FilterNamePrefix, Config) ->
+    describe_metric_filters(LogGroupName, Limit, FilterNamePrefix, undefined,
+                            undefined, Config).
+
+
+-spec describe_metric_filters(
+    log_group_name(),
+    limit(),
+    filter_name_prefix(),
+    metric_name(),
+    metric_namespace(),
+    aws_config()
+) -> result_paged(metric_filters()).
+describe_metric_filters(LogGroupName, Limit, FilterNamePrefix, MetricName,
+                        MetricNamespace, Config) ->
+    describe_metric_filters(LogGroupName, Limit, FilterNamePrefix, MetricName,
+                            MetricNamespace, undefined, Config).
+
+
+-spec describe_metric_filters(
+    log_group_name(),
+    limit(),
+    filter_name_prefix(),
+    metric_name(),
+    metric_namespace(),
+    paging_token(),
+    aws_config()
+) -> result_paged(metric_filters()).
+describe_metric_filters(LogGroupName, Limit, FilterNamePrefix, MetricName,
+                        MetricNamespace, PrevToken, Config) ->
+    case cw_request(Config, "DescribeMetricFilters", [
+        {<<"logGroupName">>, LogGroupName},
+        {<<"limit">>, Limit},
+        {<<"filterNamePrefix">>, FilterNamePrefix},
+        {<<"metricName">>, MetricName},
+        {<<"metricNamespace">>, MetricNamespace},
+        {<<"nextToken">>, PrevToken}
+    ]) of
+        {ok, Data} ->
+            MetricFilters = proplists:get_value(<<"metricFilters">>, Data, []),
+            NextToken = proplists:get_value(<<"nextToken">>, Data, undefined),
+            {ok, MetricFilters, NextToken};
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+%%------------------------------------------------------------------------------
+%% @doc
+%%
+%% ListTagsLogGroup
+%% https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_ListTagsLogGroup.html
+%%
+%% @end
+%%------------------------------------------------------------------------------
+
+-spec list_tags_log_group(
+    log_group_name()
+) -> tags_return().
+
+list_tags_log_group(LogGroup) ->
+    list_tags_log_group(LogGroup, default_config()).
+
+
+-spec list_tags_log_group(
+    log_group_name(),
+    aws_config()
+) -> tags_return().
+
+list_tags_log_group(LogGroup, Config) ->
+    case
+        cw_request(Config, "ListTagsLogGroup", [{<<"logGroupName">>, LogGroup}])
+    of
+        {ok, Json} ->
+            Tags = proplists:get_value(<<"tags">>, Json, []),
+            {ok, Tags};
+        {error, _} = Error ->
+            Error
+    end.
+
+%%------------------------------------------------------------------------------
+%% @doc
+%%
+%% TagLogGroup action
+%% https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_TagLogGroup.html
+%%
+%% @end
+%%------------------------------------------------------------------------------
+
+-spec tag_log_group(
+    log_group_name(),
+    list(tag())
+) -> ok.
+
+tag_log_group(LogGroup, Tags) when is_list(Tags) ->
+    tag_log_group(LogGroup, Tags, default_config()).
+
+
+-spec tag_log_group(
+    log_group_name(),
+    list(tag()),
+    aws_config()
+) -> ok.
+
+tag_log_group(LogGroup, Tags, Config) when is_list(Tags) ->
+    Params = [{<<"logGroupName">>, LogGroup},
+              {<<"tags">>, Tags}
+    ],
+    cw_request(Config, "TagLogGroup", Params).
+
 %%==============================================================================
 %% Internal functions
 %%==============================================================================
@@ -355,6 +531,8 @@ maybe_cw_request({ok, Config}, Action, Params) ->
 maybe_cw_request({error, _} = Error, _Action, _Params) ->
     Error.
 
+maybe_json({ok, <<>>}) ->
+    {ok, []};
 maybe_json({ok, Response}) ->
     {ok, jsx:decode(Response)};
 maybe_json({error, _} = Error) ->

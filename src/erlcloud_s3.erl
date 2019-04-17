@@ -35,7 +35,7 @@
          upload_part/5, upload_part/7,
          complete_multipart/4, complete_multipart/6,
          abort_multipart/3, abort_multipart/6,
-         list_multipart_uploads/1, list_multipart_uploads/2,
+         list_multipart_uploads/1, list_multipart_uploads/2, list_multipart_uploads/4,
          get_object_url/2, get_object_url/3,
          get_bucket_and_key/1,
          list_bucket_inventory/1, list_bucket_inventory/2, list_bucket_inventory/3,
@@ -315,40 +315,56 @@ extract_delete_objects_batch_err_contents(Nodes) ->
 to_flat_format([{key,Key},{code,Code},{message,Message}]) ->
     {Key,Code,Message}.
 
-% returns paths list from AWS S3 root directory, used as input to delete_objects_batch
-% example :
-%    25> rp(erlcloud_s3:explore_dirstructure("xmppfiledev", ["sailfish/deleteme"], [])).
-%    ["sailfish/deleteme/deep/deep1/deep4/ZZZ_1.txt",
-%     "sailfish/deleteme/deep/deep1/deep4/ZZZ_0.txt",
-%     "sailfish/deleteme/deep/deep1/ZZZ_0.txt",
-%     "sailfish/deleteme/deep/ZZZ_0.txt"]
-%    ok
-%
+%% returns paths list from AWS S3 root directory, used as input to
+%% delete_objects_batch
+%% example :
+%%    25> rp(erlcloud_s3:explore_dirstructure("xmppfiledev",
+%%                                            ["sailfish/deleteme"], [])).
+%%    ["sailfish/deleteme/deep/deep1/deep4/ZZZ_1.txt",
+%%     "sailfish/deleteme/deep/deep1/deep4/ZZZ_0.txt",
+%%     "sailfish/deleteme/deep/deep1/ZZZ_0.txt",
+%%     "sailfish/deleteme/deep/ZZZ_0.txt"]
+%%    ok
+%%
 -spec explore_dirstructure(string(), list(), list()) -> list() | no_return().
 explore_dirstructure(Bucketname, Branches, Accum) ->
     explore_dirstructure(Bucketname, Branches, Accum, default_config()).
 
--spec explore_dirstructure(string(), list(), list(), aws_config()) -> list() | no_return().
-explore_dirstructure(_, [], Result, _Config) ->
-                                    lists:append(Result);
-explore_dirstructure(Bucketname, [Branch|Tail], Accum, Config)
+-spec explore_dirstructure(string(), list(), list(), aws_config()) ->
+                                  list() | no_return().
+explore_dirstructure(Bucketname, [Branch|Tail], Accum, Config) ->
+    explore_dirstructure(Bucketname, [Branch|Tail], Accum, Config, []).
+
+
+explore_dirstructure(_, [], Result, _Config, _Marker) ->
+    lists:append(Result);
+explore_dirstructure(Bucketname, [Branch|Tail], Accum, Config, Marker)
     when is_record(Config, aws_config) ->
     ProcessContent = fun(Data)->
             Content = proplists:get_value(contents, Data),
-            lists:foldl(fun(I,Acc)-> R = proplists:get_value(key, I), [R|Acc] end, [], Content)
+            lists:foldl(fun(I,Acc)-> R = proplists:get_value(key, I),
+                                     [R|Acc] end, [], Content)
             end,
 
-    Data = list_objects(Bucketname, [{prefix, Branch}, {delimiter, "/"}], Config),
-    case proplists:get_value(common_prefixes, Data) of
-        [] -> % it has reached end of the branch
-            Files = ProcessContent(Data),
-            explore_dirstructure(Bucketname, Tail, [Files|Accum], Config);
-        Sub ->
-            Files = ProcessContent(Data),
-            List = lists:foldl(fun(I,Acc)-> R = proplists:get_value(prefix, I), [R|Acc] end, [], Sub),
-            Result = explore_dirstructure(Bucketname, List, Accum, Config),
-            explore_dirstructure(Bucketname, Tail, [Result, Files|Accum], Config)
-    end.
+    Data = list_objects(Bucketname, [{prefix, Branch},
+                                     {delimiter, "/"},
+                                     {marker, Marker}], Config),
+    Files = ProcessContent(Data),
+    Sub = proplists:get_value(common_prefixes, Data),
+    SubDirs = lists:foldl(fun(I,Acc)-> R = proplists:get_value(prefix, I),
+                                       [R|Acc] end, [], Sub),
+    SubFiles = explore_dirstructure(Bucketname, SubDirs, [], Config, []),
+    TruncFiles =
+        case proplists:get_value(is_truncated, Data) of
+            false ->
+                [];
+            true ->
+                NextMarker = proplists:get_value(next_marker, Data),
+                explore_dirstructure(Bucketname, [Branch], [], Config,
+                                     NextMarker)
+        end,
+    explore_dirstructure(Bucketname, Tail,
+                         [SubFiles, TruncFiles, Files|Accum], Config, []).
 
 -spec delete_object(string(), string()) -> proplist() | no_return().
 
@@ -449,7 +465,7 @@ get_bucket_lifecycle(BucketName, Config)
                 Error
         end.
 
--spec put_bucket_lifecycle(string(), binary()) -> ok | {error, Reason::term()} | no_return().
+-spec put_bucket_lifecycle(string(), list() | binary()) -> ok | {error, Reason::term()} | no_return().
 put_bucket_lifecycle(BucketName, Policy) ->
     put_bucket_lifecycle(BucketName, Policy, default_config()).
 
@@ -1118,7 +1134,7 @@ upload_part(BucketName, Key, UploadId, PartNumber, Value, HTTPHeaders, Config)
             Error
     end.
 
--spec complete_multipart(string(), string(), string(), [{integer(), string()}]) -> {ok, proplist()} | {error, any()}.
+-spec complete_multipart(string(), string(), string(), [{integer(), string()}]) -> ok | {error, any()}.
 complete_multipart(BucketName, Key, UploadId, ETags)
   when is_list(BucketName), is_list(Key), is_list(UploadId), is_list(ETags) ->
     complete_multipart(BucketName, Key, UploadId, ETags, [], default_config()).
@@ -1840,6 +1856,9 @@ port_spec(#aws_config{s3_port=Port}) ->
 %% http://docs.aws.amazon.com/general/latest/gr/rande.html#s3_region
 aws_region_from_host(Host) ->
     case string:tokens(Host, ".") of
+        %% s3.cn-north-1.amazonaws.com.cn
+        ["s3", Value, _, _, _] ->
+            Value;
         %% s3.eu-central-1.amazonaws.com
         ["s3", Value, _, _] ->
             Value;

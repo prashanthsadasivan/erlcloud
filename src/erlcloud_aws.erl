@@ -11,7 +11,7 @@
          aws_request_form_raw/8,
          do_aws_request_form_raw/9,
          param_list/2, default_config/0, auto_config/0, auto_config/1,
-         default_config_region/2,
+         default_config_region/2, default_config_override/1,
          update_config/1,clear_config/1, clear_expired_configs/0,
          service_config/3, service_host/2,
          configure/1, format_timestamp/1,
@@ -34,7 +34,7 @@
 -define(GREGORIAN_EPOCH_OFFSET, 62167219200).
 -define(DEFAULT_CONTENT_TYPE, "application/x-www-form-urlencoded; charset=utf-8").
 
-%% 
+%%
 %% environment variables
 -define(AWS_ACCESS,  ["AWS_ACCESS_KEY_ID"]).
 -define(AWS_SECRET,  ["AWS_SECRET_ACCESS_KEY"]).
@@ -67,7 +67,7 @@
 
 -record(profile_options, {
          session_name :: string(),
-         session_secs :: 900..3600,
+         session_secs :: 900..43200,
          external_id :: string()
 }).
 
@@ -745,11 +745,14 @@ service_config( <<"sts">> = Service, Region, Config ) ->
     Host = service_host( Service, Region ),
     Config#aws_config{ sts_host = Host };
 service_config( <<"glue">> = Service, Region, Config ) ->
-  Host = service_host( Service, Region ),
-  Config#aws_config{ glue_host = Host };
+    Host = service_host( Service, Region ),
+    Config#aws_config{ glue_host = Host };
 service_config( <<"athena">> = Service, Region, Config ) ->
+    Host = service_host( Service, Region ),
+    Config#aws_config{ athena_host = Host };
+service_config( <<"states">> = Service, Region, Config ) ->
   Host = service_host( Service, Region ),
-  Config#aws_config{ athena_host = Host };
+  Config#aws_config{ states_host = Host };
 service_config( <<"config">> = Service, Region, Config ) ->
     Host = service_host( Service, Region ),
     Config#aws_config{ config_host = Host };
@@ -757,6 +760,9 @@ service_config(<<"cloudwatch_logs">>, Region, Config)->
     Host = service_host(<<"logs">>, Region),
     Config#aws_config{cloudwatch_logs_host = Host};
 service_config( <<"waf">>, _Region, Config ) -> Config;
+service_config( <<"guardduty">> = Service, Region, Config ) ->
+    Host = service_host( Service, Region ),
+    Config#aws_config{guardduty_host = Host};
 service_config( <<"cur">>, Region, Config ) ->
     Host = service_host(<<"cur">>, Region),
     Config#aws_config{cur_host = Host}.
@@ -778,6 +784,8 @@ service_host( <<"s3">>, <<"us-gov-west-1">> ) ->
 service_host( <<"s3">>, Region ) ->
     binary_to_list( <<"s3-", Region/binary, ".amazonaws.com">> );
 service_host( <<"sdb">>, <<"us-east-1">> ) -> "sdb.amazonaws.com";
+service_host( <<"states">>, Region ) ->
+    binary_to_list( <<"states.", Region/binary, ".amazonaws.com">> );
 service_host( Service, Region ) when is_binary(Service) ->
     binary_to_list( <<Service/binary, $., Region/binary, ".amazonaws.com">> ).
 
@@ -982,10 +990,16 @@ sign_v4(Method, Uri, Config, Headers, Payload, Region, Service, QueryParams) ->
     [{"Authorization", lists:flatten(Authorization)} | Headers2].
 
 iso_8601_basic_time() ->
-    {{Year,Month,Day},{Hour,Min,Sec}} = calendar:now_to_universal_time(os:timestamp()),
-    lists:flatten(io_lib:format(
-                    "~4.10.0B~2.10.0B~2.10.0BT~2.10.0B~2.10.0B~2.10.0BZ",
-                    [Year, Month, Day, Hour, Min, Sec])).
+    {{Year,Month,Day},{Hour,Min,Sec}} = calendar:universal_time(),
+    lists:flatten([
+        integer_to_list(Year), two_digits(Month), two_digits(Day), $T,
+        two_digits(Hour), two_digits(Min), two_digits(Sec), $Z
+    ]).
+
+two_digits(Int) when Int < 10 ->
+    [$0, $0 + Int];
+two_digits(Int) ->
+    integer_to_list(Int).
 
 canonical_request(Method, CanonicalURI, QParams, Headers, PayloadHash) ->
     {CanonicalHeaders, SignedHeaders} = canonical_headers(Headers),
@@ -1152,7 +1166,7 @@ profile( Name ) ->
 
 
 -type profile_option() :: {role_session_name, string()}
-                          | {role_session_secs, 900..3600}.
+                          | {role_session_secs, 900..43200}.
 
 %%%---------------------------------------------------------------------------
 -spec profile( Name :: atom(), Options :: [profile_option()] ) ->
@@ -1249,7 +1263,7 @@ profiles_parse( Content ) ->
     case eini:parse( Content ) of
         {ok, Profiles} -> Profiles;
         Error ->
-            error_msg( "failed to parse credentials, because: ~p", [Error] )
+            erlang:error({error, {unable_to_parse_credential_file, Error}})
     end.
 
 profiles_resolve( Name, Profiles, Options ) ->

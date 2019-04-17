@@ -4,6 +4,7 @@
 -export([start/0]).
 -export([stop/1]).
 -export([send_message_batch/1]).
+-export([send_message_with_message_opts/1]).
 -export([send_message_with_message_attributes/1]).
 -export([receive_messages_with_message_attributes/1]).
 -export([send_message_batch_with_message_attributes/1]).
@@ -16,10 +17,14 @@ erlcloud_api_test_() ->
      fun start/0,
      fun stop/1,
      [
+      fun set_queue_attributes/1,
+      fun get_queue_url/1,
+      fun send_message_with_message_opts/1,
       fun send_message_with_message_attributes/1,
       fun receive_messages_with_message_attributes/1,
       fun send_message_batch/1,
-      fun send_message_batch_with_message_attributes/1
+      fun send_message_batch_with_message_attributes/1,
+      fun receive_messages_with_unknown_attributes/1
      ]}.
 
 start() ->
@@ -135,6 +140,86 @@ output_test(Fun, {Line, {Description, Response, Result}}) ->
 output_tests(Fun, Tests) ->
     [output_test(Fun, Test) || Test <- Tests].
 
+set_queue_attributes(_) ->
+    Attributes = [{kms_master_key_id, "some/id"},
+                  {kms_data_key_reuse_period_seconds, 200}],
+    Expected = [
+        {"Action", "SetQueueAttributes"},
+        {"Attribute.1.Name", "KmsMasterKeyId"},
+        {"Attribute.1.Value", "some%2Fid"},
+        {"Attribute.2.Name", "KmsDataKeyReusePeriodSeconds"},
+        {"Attribute.2.Value", "200"}
+    ],
+    Tests =
+        [?_sqs_test(
+            {"Test queue attributes setting.",
+             ?_f(erlcloud_sqs:set_queue_attributes("Queue", Attributes)),
+             Expected})],
+    Response = "
+<SetQueueAttributesResponse>
+   <ResponseMetadata>
+      <RequestId>40945605-b328-53b5-aed4-1cc24a7240e8</RequestId>
+   </ResponseMetadata>
+</SetQueueAttributesResponse>",
+    input_tests(Response, Tests).
+
+get_queue_url(_) ->
+    Expected = [
+        {"Action", "GetQueueUrl"},
+        {"QueueName", "Queue"}
+    ],
+    Tests =
+        [?_sqs_test(
+            {"Test queue URL getting.",
+             ?_f(erlcloud_sqs:get_queue_url("Queue")),
+             Expected})],
+    Response = "
+<GetQueueUrlResponse>
+    <GetQueueUrlResult>
+        <QueueUrl>https://sqs.us-east-2.amazonaws.com/123456789012/Queue</QueueUrl>
+    </GetQueueUrlResult>
+    <ResponseMetadata>
+        <RequestId>470a6f13-2ed9-4181-ad8a-2fdea142988e</RequestId>
+    </ResponseMetadata>
+</GetQueueUrlResponse>",
+    input_tests(Response, Tests).
+
+send_message_with_message_opts(_) ->
+    MessageBody = "Hello",
+    MessageOpts = [
+        {message_group_id, "GroupId"},
+        {message_deduplication_id, "DedupId"}
+    ],
+    Expected = [
+        {"Action", "SendMessage"},
+        {"MessageGroupId", "GroupId"},
+        {"MessageDeduplicationId", "DedupId"},
+        {"MessageBody", MessageBody}
+    ],
+    Tests =
+        [?_sqs_test(
+            {"Test sends a message with message options.",
+                ?_f(erlcloud_sqs:send_message("Queue.fifo", MessageBody, MessageOpts,
+                    erlcloud_aws:default_config())),
+                Expected})],
+    Response = "
+<SendMessageResponse>
+    <SendMessageResult>
+        <MD5OfMessageBody>
+            fafb00f5732ab283681e124bf8747ed1
+        </MD5OfMessageBody>
+        <MessageId>
+            5fea7756-0ea4-451a-a703-a558b933e274
+        </MessageId>
+    </SendMessageResult>
+    <ResponseMetadata>
+        <RequestId>
+            27daac76-34dd-47df-bd01-1f6e873584a0
+        </RequestId>
+    </ResponseMetadata>
+</SendMessageResponse>",
+    input_tests(Response, Tests).
+
 send_message_with_message_attributes(_) ->
     MessageBody = "Hello",
     MessageAttributes = [{"first", "value"},
@@ -202,6 +287,14 @@ receive_messages_with_message_attributes(_) ->
         <Value>195004372649</Value>
       </Attribute>
       <Attribute>
+        <Name>MessageGroupId</Name>
+        <Value>GroupId</Value>
+      </Attribute>
+      <Attribute>
+        <Name>MessageDeduplicationId</Name>
+        <Value>DedupId</Value>
+      </Attribute>
+      <Attribute>
         <Name>SentTimestamp</Name>
         <Value>1238099229000</Value>
       </Attribute>
@@ -235,6 +328,13 @@ receive_messages_with_message_attributes(_) ->
           <StringValue>42</StringValue>
         </Value>
       </MessageAttribute>
+    <MessageAttribute>
+        <Name>number</Name>
+        <Value>
+            <DataType>Number</DataType>
+            <StringValue>56</StringValue>
+        </Value>
+    </MessageAttribute>
       <MessageAttribute>
         <Name>binary</Name>
         <Value>
@@ -263,6 +363,8 @@ receive_messages_with_message_attributes(_) ->
                              {receipt_handle, "MbZj6wDWli+JvwwJaBV+3dcjk2YW2vA3+STFFljTM8tJJg6HRG6PYSasuWXPJB+CwLj1FjgXUv1uSj1gUPAWV66FU/WeR4mq2OKpEGYWbnLmpRCJVAyeMjeU5ZBdtcQ+QEauMZc8ZRv37sIW2iJKq3M9MFx1YvV11A2x/KSbkJ0="},
                              {attributes, [
                                            {sender_id, "195004372649"},
+                                           {message_group_id, "GroupId"},
+                                           {message_deduplication_id, "DedupId"},
                                            {sent_timestamp, 1238099229000},
                                            {approximate_receive_count, 5},
                                            {approximate_first_receive_timestamp, 1250700979248}]},
@@ -270,6 +372,7 @@ receive_messages_with_message_attributes(_) ->
                                                    {"content-type", "application/json"},
                                                    {"float", 3.1415926},
                                                    {"integer", 42},
+                                                   {"number", 56},
                                                    {"binary", <<"Binary string">>},
                                                    {"uuid", {"uuid", <<"db3bf1fc-0cac-4cf8-8d2c-5c307ad4ac3a">>}}
                                                   ]}
@@ -280,14 +383,55 @@ receive_messages_with_message_attributes(_) ->
              MessageResponse, Expected})],
     output_tests(?_f(erlcloud_sqs:receive_message("Queue", all, 1, 30, none, all, erlcloud_aws:default_config())), Tests).
 
+    receive_messages_with_unknown_attributes(_) ->
+            MessageResponse = "
+        <ReceiveMessageResponse>
+          <ReceiveMessageResult>
+            <Message>
+              <MessageId>5fea7756-0ea4-451a-a703-a558b933e274</MessageId>
+              <ReceiptHandle>MbZj6wDWli+JvwwJaBV+3dcjk2YW2vA3+STFFljTM8tJJg6HRG6PYSasuWXPJB+CwLj1FjgXUv1uSj1gUPAWV66FU/WeR4mq2OKpEGYWbnLmpRCJVAyeMjeU5ZBdtcQ+QEauMZc8ZRv37sIW2iJKq3M9MFx1YvV11A2x/KSbkJ0=</ReceiptHandle>
+              <MD5OfBody>fafb00f5732ab283681e124bf8747ed1</MD5OfBody>
+              <Body>This is a test message</Body>
+            <MessageAttribute>
+            <Name>unknown</Name>
+            <Value>
+                <DataType>Unknown</DataType>
+                <StringValue>invalid</StringValue>
+            </Value>
+            </MessageAttribute>
+            </Message>
+          </ReceiveMessageResult>
+          <ResponseMetadata>
+            <RequestId>
+              b6633655-283d-45b4-aee4-4e84e0ae6afa
+            </RequestId>
+          </ResponseMetadata>
+        </ReceiveMessageResponse>",
+
+        F = fun() ->
+                ?assertException(error,decode_message_attribute_value_error, 
+                    erlcloud_sqs:receive_message("Queue", all, 1, 30, none, all, erlcloud_aws:default_config())),
+            decode_message_attribute_value_error
+        end,
+
+        Tests =
+                [?_sqs_test(
+                    {"Test receives a message with message unknown attribute.",
+                     MessageResponse, decode_message_attribute_value_error})],
+                     
+        output_tests(F, Tests).
+
 send_message_batch(_) ->
-    Batch = [{"batch-message-01", "Hello"}, {"batch-message-02", "World"}],
+    Batch = [{"batch-message-01", "Hello", [], [{message_group_id, "GroupId"}]},
+             {"batch-message-02", "World", [], [{message_deduplication_id, "DedupId"}]}],
     Expected = [
                 {"Action", "SendMessageBatch"},
                 {"SendMessageBatchRequestEntry.1.Id", "batch-message-02"},
                 {"SendMessageBatchRequestEntry.1.MessageBody", "World"},
+                {"SendMessageBatchRequestEntry.1.MessageDeduplicationId", "DedupId"},
                 {"SendMessageBatchRequestEntry.2.Id", "batch-message-01"},
-                {"SendMessageBatchRequestEntry.2.MessageBody", "Hello"}
+                {"SendMessageBatchRequestEntry.2.MessageBody", "Hello"},
+                {"SendMessageBatchRequestEntry.2.MessageGroupId", "GroupId"}
                ],
     Tests =
         [?_sqs_test(
